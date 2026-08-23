@@ -57,4 +57,30 @@ def list_sources() -> str:
 
 
 if __name__ == "__main__":
-    mcp.run(transport="stdio")
+    import sys
+    args = sys.argv[1:]
+    transport = "stdio"
+    host = "127.0.0.1"
+    port = 8000
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--http":
+            transport = "http"
+        elif a == "--streamable-http":
+            transport = "streamable-http"
+        elif a == "--stdio":
+            transport = "stdio"
+        elif a == "--host" and i + 1 < len(args):
+            host = args[i + 1]
+            i += 1
+        elif a == "--port" and i + 1 < len(args):
+            port = int(args[i + 1])
+            i += 1
+        i += 1
+    if transport in ("http", "streamable-http"):
+        # 独立启动为 HTTP 服务，供外部 MCP 客户端连接（也可手动 curl/浏览器访问）。
+        mcp.run(transport=transport, host=host, port=port)
+    else:
+        # 默认 stdio：供 dsh-mcp-client 以子进程方式连接。
+        mcp.run(transport="stdio")

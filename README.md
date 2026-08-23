@@ -14,6 +14,13 @@ MinIO 知识库的向量检索层：把上传到 MinIO 的文档（PDF/txt/md）
 ## 安装
 
 ```powershell
+# 一键安装 + 启动（依赖 + 校验 + 后台拉起 HTTP 服务，默认 127.0.0.1:8000）
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+# 参数：-Port 8000  -BindHost 127.0.0.1  -NoLaunch(只安装)  -SkipInstall(跳过安装直接启动)
+```
+
+或手动：
+```powershell
 pip install -r requirements.txt
 # 首次检索会下载默认 embedding（all-MiniLM-L6-v2，约 80MB，缓存在 ~/.cache/chroma）
 ```

@@ -1,0 +1,5 @@
+chroma_data/
+__pycache__/
+*.pyc
+_extract.txt
+sample_*.pdf

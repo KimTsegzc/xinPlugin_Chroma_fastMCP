@@ -10,7 +10,7 @@ DSH 通过 dsh-mcp-client 以 stdio 连接本服务，工具名形如 mcp__chrom
 from fastmcp import FastMCP
 from chroma_store import search as _search
 from chroma_store import list_sources as _list_sources
-from ingest import ingest_file
+from ingest import ingest_file as _ingest_file
 
 mcp = FastMCP("chroma-kb", instructions="MinIO 知识库向量检索服务（Chroma）。")
 
@@ -41,7 +41,7 @@ def search(query: str, top_k: int = 6) -> str:
 @mcp.tool()
 def ingest_file(path: str, source_name: str = "") -> str:
     """把本地文件（PDF/txt/md）入库到向量知识库，供后续 search 检索。"""
-    r = ingest_file(path, source_name or None)
+    r = _ingest_file(path, source_name or None)
     if r.get("ok"):
         return f"入库完成：{r['source']} 共 {r['chunks']} 个片段（{r['pages']} 页）。"
     return f"入库失败：{r.get('error')}"

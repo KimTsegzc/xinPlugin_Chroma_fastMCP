@@ -1,49 +1,254 @@
 """文件入库 CLI：python ingest.py <file> [source_name]
 
 供 MinIO 插件上传后调用，也支持手动入库。输出 JSON 摘要便于联动方解析。
+
+支持的格式（参照 xin-kb-parser 的做法）：
+  - .pdf   优先内嵌 pdftotext.exe（含中文 CMap），其次 pypdf 兜底
+  - .docx  zip+XML 读 word/document.xml（段落/表格单元格分行），零依赖
+  - .ofd   国标公文 zip+XML 提取 TextCode（按页码排序），零依赖
+  - .md/.txt/.csv/.json/.html 等纯文本：自动识别 UTF-8 / GBK
+  - 其他（.xlsx/.pptx/图片/旧版 .doc 等）→ unsupported，返回「暂不支持向量化」
 """
 import sys
 import os
+import re
 import json
+import html as _html
+import shutil
+import zipfile
+import tempfile
+import subprocess
+from uuid import uuid4
 
-from chroma_store import ingest_chunks, chunk_page_text, remove_source
+__version__ = "1.1.0"
+
+# ---- 文件类型判定 ------------------------------------------------------------
+PDF_EXTS = ('.pdf',)
+DOCX_EXTS = ('.docx',)
+OFD_EXTS = ('.ofd',)
+# 纯文本类：整份按 UTF-8/GBK 读
+TEXT_EXTS = ('.txt', '.md', '.markdown', '.csv', '.json', '.yaml', '.yml', '.xml', '.html', '.htm', '.log', '.toml', '.ini', '.conf', '.env', '.cfg', '.rtf', '.js', '.mjs', '.ts', '.tsx', '.jsx', '.py', '.go', '.java', '.c', '.cpp', '.h', '.cs', '.rs', '.rb', '.php', '.swift', '.kt', '.scala', '.sh', '.ps1', '.bat', '.sql', '.graphql', '.css', '.scss', '.less')
+
+SUPPORTED_DESC = 'pdf / docx / ofd / txt/md / csv / json / html 等纯文本'
+
+
+def _kind(ext):
+    e = (ext or '').lower()
+    if e in PDF_EXTS:
+        return 'pdf'
+    if e in DOCX_EXTS:
+        return 'docx'
+    if e in OFD_EXTS:
+        return 'ofd'
+    if e in TEXT_EXTS:
+        return 'text'
+    return 'unsupported'
+
+
+# ---- 纯文本（自动 UTF-8 / GBK）---------------------------------------------
+def extract_text_file(path):
+    with open(path, 'rb') as f:
+        raw = f.read()
+    try:
+        s = raw.decode('utf-8')
+    except UnicodeDecodeError:
+        s = raw.decode('gbk', 'replace')
+    if s.startswith('\ufeff'):
+        s = s[1:]
+    return [(1, s)]
+
+
+# ---- .docx（zip + XML，零依赖）---------------------------------------------
+def extract_docx(path):
+    with zipfile.ZipFile(path) as z:
+        try:
+            xml = z.read('word/document.xml').decode('utf-8', 'replace')
+        except KeyError:
+            return ''
+    text = re.sub(r'</w:tc>', '\n', xml)      # 表格单元格边界
+    text = re.sub(r'<w:p[ >]', '\n', text)    # 段落边界
+    text = re.sub(r'<w:tab[ /]', '\t', text)  # 制表符
+    text = re.sub(r'<[^>]+>', '', text)        # 去 XML 标签
+    text = _html.unescape(text)
+    return text
+
+
+# ---- .ofd（国标公文 zip + XML，提取 TextCode，按页码排序）--------------------
+def extract_ofd(path):
+    parts = []
+    with zipfile.ZipFile(path) as z:
+        names = [n for n in z.namelist() if n.lower().endswith('.xml')]
+
+        def page_key(n):
+            m = re.search(r'Page_(\d+)', n)
+            return int(m.group(1)) if m else 10 ** 9
+
+        for n in sorted(names, key=page_key):
+            xml = z.read(n).decode('utf-8', 'replace')
+            for m in re.finditer(r'<(?:[A-Za-z0-9_]+:)?TextCode\b[^>]*>(.*?)</(?:[A-Za-z0-9_]+:)?TextCode>', xml, re.S):
+                parts.append(_html.unescape(m.group(1)))
+    return '\n'.join(parts)
+
+
+# ---- .pdf -----------------------------------------------------------------
+def _find_pdftotext():
+    env = os.environ.get('XIN_PDFTOTEXT')
+    if env and os.path.isfile(env):
+        return env
+    here = os.path.dirname(os.path.abspath(__file__))
+    for c in (os.path.join(here, 'bin', 'pdftotext.exe'), os.path.join(here, 'bin', 'pdftotext')):
+        if os.path.isfile(c):
+            return c
+    for c in (
+        os.path.join(os.path.expanduser('~'), '.dsh', 'knowledge-base', 'bin', 'pdftotext.exe'),
+        os.path.join(os.path.expanduser('~'), '.dsh', 'knowledge-base', 'bin', 'bin', 'pdftotext.exe'),
+    ):
+        if os.path.isfile(c):
+            return c
+    p = shutil.which('pdftotext')
+    if p:
+        return p
+    return None
+
+
+def _build_xpdfcfg(cs_dir):
+    lines = []
+    add = os.path.join(cs_dir, 'add-to-xpdfrc')
+    if os.path.isfile(add):
+        with open(add, encoding='utf-8', errors='ignore') as f:
+            for ln in f:
+                s = ln.strip()
+                if not s or s.startswith('#'):
+                    continue
+                if not re.match(r'^\s*(cidToUnicode|unicodeMap|cMapDir|toUnicodeDir)\b', s):
+                    continue
+                m = re.match(r'^(\s*\S+\s+\S+\s+)(\S+)(.*)$', s)
+                if m:
+                    local = os.path.join(cs_dir, os.path.basename(m.group(2)))
+                    if os.path.isfile(local):
+                        lines.append(m.group(1) + local)
+                    else:
+                        lines.append(s)
+                else:
+                    lines.append(s)
+    if not lines:
+        cid = os.path.join(cs_dir, 'Adobe-GB1.cidToUnicode')
+        cmap = os.path.join(cs_dir, 'CMap')
+        if os.path.isfile(cid):
+            lines.append('cidToUnicode Adobe-GB1 ' + cid)
+        if os.path.isdir(cmap):
+            lines.append('cMapDir Adobe-GB1 ' + cmap)
+        if os.path.isdir(cs_dir):
+            for fn in os.listdir(cs_dir):
+                if fn.endswith('.unicodeMap'):
+                    lines.append('unicodeMap ' + os.path.splitext(fn)[0] + ' ' + os.path.join(cs_dir, fn))
+    return '\n'.join(lines)
 
 
 def extract_pdf(path):
+    exe = _find_pdftotext()
+    if exe:
+        tmp = os.path.join(tempfile.gettempdir(), 'kb_' + uuid4().hex + '.txt')
+        cfg = None
+        cs = os.path.join(os.path.dirname(exe), 'xpdf-data', 'chinese-simplified')
+        try:
+            if os.path.isdir(cs):
+                cfg = os.path.join(tempfile.gettempdir(), 'kb_' + uuid4().hex + '.xpdfrc')
+                with open(cfg, 'w', encoding='utf-8') as f:
+                    f.write(_build_xpdfcfg(cs))
+                subprocess.run([exe, '-cfg', cfg, '-enc', 'UTF-8', '-raw', path, tmp], capture_output=True)
+            else:
+                subprocess.run([exe, '-enc', 'UTF-8', '-raw', path, tmp], capture_output=True)
+            if os.path.exists(tmp):
+                with open(tmp, encoding='utf-8', errors='replace') as f:
+                    t = f.read()
+                pages_raw = t.split('\x0c')
+                pages = [(i + 1, p) for i, p in enumerate(pages_raw) if p.strip()]
+                if pages:
+                    return pages
+        finally:
+            if cfg and os.path.exists(cfg):
+                os.remove(cfg)
+            if os.path.exists(tmp):
+                os.remove(tmp)
     import pypdf
     reader = pypdf.PdfReader(path)
     pages = []
     for i, page in enumerate(reader.pages):
-        txt = page.extract_text() or ""
-        pages.append((i + 1, txt))
+        pages.append((i + 1, page.extract_text() or ''))
     return pages
 
 
-def extract_text(path):
-    with open(path, "r", encoding="utf-8", errors="replace") as f:
-        return [(1, f.read())]
+# ---- 汇总：按类型返回 (kind, pages|None) ------------------------------------
+def extract(path, ext=None):
+    # 插件上传时临时文件是 .minio-upload.bin，真实类型要看源文件名后缀
+    ext = (ext or os.path.splitext(path)[1]).lower()
+    k = _kind(ext)
+    if k == 'pdf':
+        return k, extract_pdf(path)
+    if k == 'docx':
+        return k, [(1, extract_docx(path))]
+    if k == 'ofd':
+        return k, [(1, extract_ofd(path))]
+    if k == 'text':
+        return k, extract_text_file(path)
+    return 'unsupported', None
 
 
+# ---- 入库 -------------------------------------------------------------------
 def ingest_file(path, source=None, reingest=True):
     if not os.path.isfile(path):
         return {"ok": False, "error": f"file not found: {path}"}
     name = source or os.path.basename(path)
-    ext = os.path.splitext(path)[1].lower()
-    if ext == ".pdf":
-        pages = extract_pdf(path)
-    else:
-        pages = extract_text(path)
+    # 插件解码后的临时文件是 .minio-upload.bin，真实类型取源文件名后缀
+    ext = os.path.splitext(name)[1].lower()
+
+    k, pages = extract(path, ext)
+    if k == 'unsupported':
+        return {
+            "ok": False,
+            "unsupported": True,
+            "source": name,
+            "ext": ext,
+            "error": f"暂不支持向量化（{ext or '未知类型'}）：支持 {SUPPORTED_DESC}",
+        }
+    if not pages or all(not (t or '').strip() for _, t in pages):
+        return {
+            "ok": False,
+            "unsupported": True,
+            "source": name,
+            "ext": ext,
+            "error": "未能提取到文本（可能是扫描件/图片型文档，无文字层）",
+        }
 
     if reingest:
         remove_source(name)
 
     all_chunks = []
     for page, txt in pages:
-        if not txt.strip():
+        if not (txt or '').strip():
             continue
         all_chunks.extend(chunk_page_text(txt, name, page))
+    if not all_chunks:
+        return {"ok": False, "unsupported": True, "source": name, "ext": ext, "error": "提取到文本但未生成可入库片段"}
     n = ingest_chunks(all_chunks)
     return {"ok": True, "source": name, "chunks": n, "pages": len(pages)}
+
+
+# ---- 延迟导入 chroma_store（避免 unsupported 类型也必须装 chromadb）----------
+def chunk_page_text(text, source, page, lines_per_chunk=6, overlap=1):
+    from chroma_store import chunk_page_text as _cpt
+    return _cpt(text, source, page, lines_per_chunk=lines_per_chunk, overlap=overlap)
+
+
+def ingest_chunks(chunks):
+    from chroma_store import ingest_chunks as _ic
+    return _ic(chunks)
+
+
+def remove_source(source):
+    from chroma_store import remove_source as _rs
+    return _rs(source)
 
 
 if __name__ == "__main__":

@@ -2,6 +2,10 @@
 
 供 MinIO 插件上传后调用，也支持手动入库。输出 JSON 摘要便于联动方解析。
 
+v2 起入库同时做两件事：
+  1) 分块 → 向量入库（Chroma），供 search 粗定位；
+  2) 写全文索引（fulltext.sqlite3），供 read_range 精读回退（两段式检索的「原文」侧）。
+
 支持的格式（自包含解析层，不依赖外部技能/运行库）：
   - .pdf   优先内嵌 pdftotext.exe（含中文 CMap），其次 pdfminer.six（pip，中文干净），最后 pypdf 兜底
   - .docx  zip+XML 读 word/document.xml（段落/表格单元格分行），零依赖
@@ -21,7 +25,7 @@ import subprocess
 import time
 from uuid import uuid4
 
-__version__ = "1.1.2"
+__version__ = "2.0.0"
 
 # ---- 文件类型判定 ------------------------------------------------------------
 PDF_EXTS = ('.pdf',)
@@ -247,7 +251,23 @@ def ingest_file(path, source=None, reingest=True):
     t1 = time.perf_counter()
     n = ingest_chunks(all_chunks)
     ingest_ms = int(round((time.perf_counter() - t1) * 1000))
-    return {"ok": True, "source": name, "chunks": n, "pages": len(pages), "parser": parser, "parse_ms": parse_ms, "ingest_ms": ingest_ms}
+
+    # v2：同步写全文索引（精读回退），行号 = 原始页文本 1-based 行，与分块行号对齐。
+    lines_by_page = {}
+    for page, txt in pages:
+        lines_by_page[page] = (txt or '').split('\n')
+    ft = upsert_source(name, len(pages), n, parser, lines_by_page)
+
+    return {
+        "ok": True,
+        "source": name,
+        "chunks": n,
+        "pages": len(pages),
+        "parser": parser,
+        "parse_ms": parse_ms,
+        "ingest_ms": ingest_ms,
+        "fulltext": ft,
+    }
 
 
 # ---- 延迟导入 chroma_store（避免 unsupported 类型也必须装 chromadb）----------
@@ -264,6 +284,12 @@ def ingest_chunks(chunks):
 def remove_source(source):
     from chroma_store import remove_source as _rs
     return _rs(source)
+
+
+def upsert_source(source, pages, chunks, parser, lines_by_page):
+    """写入全文索引（v2 精读回退），延迟导入避免 unsupported 类型也依赖 fulltext。"""
+    from fulltext import upsert_source as _fu
+    return _fu(source, pages, chunks, parser, lines_by_page)
 
 
 if __name__ == "__main__":

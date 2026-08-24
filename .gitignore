@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 _extract.txt
 sample_*.pdf
+fulltext.sqlite3
+fulltext.sqlite3-*

@@ -1,6 +1,6 @@
 # xinPlugin_Chroma_fastMCP
 
-> 版本 **v1.1.0** —— 入库支持 `docx / ofd / pdf / txt·md / csv·json·html 等纯文本`；`xlsx/pptx/图片/旧版 .doc` 等返回「暂不支持向量化」。
+> 版本 **v1.1.2** —— 入库返回 `parser`/`parse_ms`/`ingest_ms`；解析层自包含（pdf→pdftotext/pdfminer·中文 CMap、docx/ofd→zip+XML、txt·md·csv·json·html 等纯文本），`xlsx/pptx/图片/旧版 .doc` 等返回「暂不支持向量化」。
 
 MinIO 知识库的向量检索层：把上传到 MinIO 的文档（PDF/docx/ofd/txt/md 等）抽取文本 → 分块 → 向量入库（Chroma），并通过 **FastMCP** 把「检索」暴露成 MCP 工具，供 DSH（DeepSeek Harness）的 `dsh-mcp-client` 连接、让 agent 在问答时直接检索原文。
 

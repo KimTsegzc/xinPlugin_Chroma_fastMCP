@@ -21,7 +21,7 @@ import subprocess
 import time
 from uuid import uuid4
 
-__version__ = "1.1.0"
+__version__ = "1.1.2"
 
 # ---- 文件类型判定 ------------------------------------------------------------
 PDF_EXTS = ('.pdf',)

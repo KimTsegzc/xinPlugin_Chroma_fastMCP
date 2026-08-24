@@ -252,6 +252,11 @@ def remove_source(source):
 
 
 if __name__ == "__main__":
+    # Windows 中文环境默认用 GBK 输出；插件按 UTF-8 解析子进程 stdout，会导致中文乱码。强制 UTF-8。
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
     if len(sys.argv) < 2:
         print(json.dumps({"ok": False, "error": "usage: python ingest.py <file> [source_name]"}, ensure_ascii=False))
         sys.exit(2)

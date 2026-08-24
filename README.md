@@ -9,9 +9,9 @@ MinIO 知识库的向量检索层：把上传到 MinIO 的文档（PDF/docx/ofd/
 | 文件 | 作用 |
 |---|---|
 | `chroma_store.py` | Chroma 持久化 + 分块（带页码/行号）+ 混合检索（语义 + 字符二元组 BM25，RRF 融合） |
-| `ingest.py` | CLI 入库：`python ingest.py <文件> [source名]`，输出 JSON 摘要（供 MinIO 插件联动调用）。按类型抽文本：`.pdf` 优先内嵌 `pdftotext.exe`(含中文 CMap) 其次 pypdf；`.docx`/`.ofd` zip+XML 零依赖；`.txt/.md/...` 自动 UTF-8/GBK；不支持类型返回 `unsupported` |
+| `ingest.py` | **自包含解析工具层** + CLI 入库：`python ingest.py <文件> [source名]`，输出 JSON 摘要（供 MinIO 插件联动调用）。按类型抽文本：`.pdf` 优先内嵌 `pdftotext.exe`(含中文 CMap)，其次 **pdfminer.six**（pip，中文干净），最后 pypdf；`.docx`/`.ofd` zip+XML 零依赖；`.txt/.md/...` 自动 UTF-8/GBK；不支持类型返回 `unsupported`。**不依赖任何外部技能/运行库** |
 | `server.py` | FastMCP stdio 服务，暴露 `search` / `ingest_file` / `list_sources` |
-| `requirements.txt` | chromadb / fastmcp / pypdf |
+| `requirements.txt` | chromadb / fastmcp / pypdf / pdfminer.six |
 
 ## 安装
 

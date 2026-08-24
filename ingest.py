@@ -2,8 +2,8 @@
 
 供 MinIO 插件上传后调用，也支持手动入库。输出 JSON 摘要便于联动方解析。
 
-支持的格式（参照 xin-kb-parser 的做法）：
-  - .pdf   优先内嵌 pdftotext.exe（含中文 CMap），其次 pypdf 兜底
+支持的格式（自包含解析层，不依赖外部技能/运行库）：
+  - .pdf   优先内嵌 pdftotext.exe（含中文 CMap），其次 pdfminer.six（pip，中文干净），最后 pypdf 兜底
   - .docx  zip+XML 读 word/document.xml（段落/表格单元格分行），零依赖
   - .ofd   国标公文 zip+XML 提取 TextCode（按页码排序），零依赖
   - .md/.txt/.csv/.json/.html 等纯文本：自动识别 UTF-8 / GBK
@@ -100,12 +100,6 @@ def _find_pdftotext():
     for c in (os.path.join(here, 'bin', 'pdftotext.exe'), os.path.join(here, 'bin', 'pdftotext')):
         if os.path.isfile(c):
             return c
-    for c in (
-        os.path.join(os.path.expanduser('~'), '.dsh', 'knowledge-base', 'bin', 'pdftotext.exe'),
-        os.path.join(os.path.expanduser('~'), '.dsh', 'knowledge-base', 'bin', 'bin', 'pdftotext.exe'),
-    ):
-        if os.path.isfile(c):
-            return c
     p = shutil.which('pdftotext')
     if p:
         return p
@@ -172,6 +166,15 @@ def extract_pdf(path):
                 os.remove(cfg)
             if os.path.exists(tmp):
                 os.remove(tmp)
+    # pdfminer.six：内置中文 CMap，中文 PDF 提取干净（无需外部二进制）
+    try:
+        from pdfminer.high_level import extract_text
+        whole = extract_text(path)
+        pages = [(i + 1, p) for i, p in enumerate(whole.split('\x0c')) if p.strip()]
+        if pages:
+            return pages, 'pdfminer'
+    except Exception:
+        pass
     import pypdf
     reader = pypdf.PdfReader(path)
     pages = []

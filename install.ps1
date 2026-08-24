@@ -1,4 +1,4 @@
-﻿# 一键安装 + 启动 xinPlugin_Chroma_fastMCP（FastMCP + Chroma 知识库检索服务）
+# 一键安装 + 启动 xinPlugin_Chroma_fastMCP（FastMCP + Chroma 知识库检索服务）
 # 用法: powershell -ExecutionPolicy Bypass -File .\install.ps1
 #   参数: -Port 8000   -BindHost 127.0.0.1   -NoLaunch(只安装)   -SkipInstall(跳过安装直接启动)
 [CmdletBinding()]
@@ -35,8 +35,8 @@ if (-not $SkipInstall) {
 }
 
 # 3. 校验关键模块
-Write-Host "[校验] chromadb / fastmcp / pypdf ..."
-python -c "import chromadb,fastmcp,pypdf;print('  import OK, chromadb', chromadb.__version__)"
+Write-Host "[校验] chromadb / fastmcp / pypdf / pdfminer ..."
+python -c "import chromadb,fastmcp,pypdf,pdfminer;print('  import OK, chromadb', chromadb.__version__)"
 if ($LASTEXITCODE -ne 0) {
     Write-Host "[错误] 模块导入失败，请检查依赖" -ForegroundColor Red
     exit 1

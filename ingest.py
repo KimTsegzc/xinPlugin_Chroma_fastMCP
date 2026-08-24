@@ -18,6 +18,7 @@ import shutil
 import zipfile
 import tempfile
 import subprocess
+import time
 from uuid import uuid4
 
 __version__ = "1.1.0"
@@ -165,7 +166,7 @@ def extract_pdf(path):
                 pages_raw = t.split('\x0c')
                 pages = [(i + 1, p) for i, p in enumerate(pages_raw) if p.strip()]
                 if pages:
-                    return pages
+                    return pages, 'pdftotext'
         finally:
             if cfg and os.path.exists(cfg):
                 os.remove(cfg)
@@ -176,23 +177,24 @@ def extract_pdf(path):
     pages = []
     for i, page in enumerate(reader.pages):
         pages.append((i + 1, page.extract_text() or ''))
-    return pages
+    return pages, 'pypdf'
 
 
-# ---- 汇总：按类型返回 (kind, pages|None) ------------------------------------
+# ---- 汇总：按类型返回 (kind, pages|None, parser) ------------------------------
 def extract(path, ext=None):
     # 插件上传时临时文件是 .minio-upload.bin，真实类型要看源文件名后缀
     ext = (ext or os.path.splitext(path)[1]).lower()
     k = _kind(ext)
     if k == 'pdf':
-        return k, extract_pdf(path)
+        pages, parser = extract_pdf(path)
+        return k, pages, parser
     if k == 'docx':
-        return k, [(1, extract_docx(path))]
+        return k, [(1, extract_docx(path))], 'docx(zip+xml)'
     if k == 'ofd':
-        return k, [(1, extract_ofd(path))]
+        return k, [(1, extract_ofd(path))], 'ofd(zip+xml TextCode)'
     if k == 'text':
-        return k, extract_text_file(path)
-    return 'unsupported', None
+        return k, extract_text_file(path), 'text(utf-8/gbk)'
+    return 'unsupported', None, None
 
 
 # ---- 入库 -------------------------------------------------------------------
@@ -203,13 +205,18 @@ def ingest_file(path, source=None, reingest=True):
     # 插件解码后的临时文件是 .minio-upload.bin，真实类型取源文件名后缀
     ext = os.path.splitext(name)[1].lower()
 
-    k, pages = extract(path, ext)
+    t = time.perf_counter()
+    k, pages, parser = extract(path, ext)
+    parse_ms = int(round((time.perf_counter() - t) * 1000))
     if k == 'unsupported':
         return {
             "ok": False,
             "unsupported": True,
             "source": name,
             "ext": ext,
+            "parser": None,
+            "parse_ms": parse_ms,
+            "ingest_ms": 0,
             "error": f"暂不支持向量化（{ext or '未知类型'}）：支持 {SUPPORTED_DESC}",
         }
     if not pages or all(not (t or '').strip() for _, t in pages):
@@ -218,6 +225,9 @@ def ingest_file(path, source=None, reingest=True):
             "unsupported": True,
             "source": name,
             "ext": ext,
+            "parser": parser,
+            "parse_ms": parse_ms,
+            "ingest_ms": 0,
             "error": "未能提取到文本（可能是扫描件/图片型文档，无文字层）",
         }
 
@@ -230,9 +240,11 @@ def ingest_file(path, source=None, reingest=True):
             continue
         all_chunks.extend(chunk_page_text(txt, name, page))
     if not all_chunks:
-        return {"ok": False, "unsupported": True, "source": name, "ext": ext, "error": "提取到文本但未生成可入库片段"}
+        return {"ok": False, "unsupported": True, "source": name, "ext": ext, "parser": parser, "parse_ms": parse_ms, "ingest_ms": 0, "error": "提取到文本但未生成可入库片段"}
+    t1 = time.perf_counter()
     n = ingest_chunks(all_chunks)
-    return {"ok": True, "source": name, "chunks": n, "pages": len(pages)}
+    ingest_ms = int(round((time.perf_counter() - t1) * 1000))
+    return {"ok": True, "source": name, "chunks": n, "pages": len(pages), "parser": parser, "parse_ms": parse_ms, "ingest_ms": ingest_ms}
 
 
 # ---- 延迟导入 chroma_store（避免 unsupported 类型也必须装 chromadb）----------
